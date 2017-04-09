@@ -30,3 +30,4 @@ benchmarks/graphs
 
 # log files
 test/log files/*.log
+output/*
