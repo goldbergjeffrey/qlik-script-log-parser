@@ -1,24 +1,18 @@
 var fs = require('fs');
-var path = require('path');
-var util = require('util')
-var promise = require('q');
+var path = require("path");
+var util = require("util");
+var main = require('../notEs2016/index');
+var Promise = require("q");
 
-var perfy = require('perfy');
 
-var parser = require('../es2016/index');
+var readdir = Promise.denodeify(fs.readdir);
+var readFile = Promise.denodeify(fs.readFile);
 
-var readdir = promise.denodeify(fs.readdir);
-var readFile = promise.denodeify(fs.readFile);
+var logFilesDirectoryName = "log files";
 
-var logFilesDirectoryName = 'log files';
+var logFilesFilter = [];
 
-var logFilesFilter = [
-
-];
-
-var logFilesForce = [
-    //	'd8d1d3f3-afa0-43c3-93e5-1528f7a48223.2016_12_07_13_27_25.FBD9E6796BC2C09F0E18.log'
-];
+var logFilesForce = [];
 
 var logFilesDirectoryFullPaths = [
     /*	path.join(__dirname, logFilesDirectoryName, 'spare35'),
@@ -28,55 +22,52 @@ var logFilesDirectoryFullPaths = [
     	path.join(__dirname, logFilesDirectoryName, 'iberia', 'renato'),
     	path.join(__dirname, logFilesDirectoryName, 'iberia', 'iberia aws'),
     	path.join(__dirname, logFilesDirectoryName, 'iberia', 'desktop'),*/
-    path.join(__dirname, logFilesDirectoryName, 'script'),
+    path.join(__dirname, logFilesDirectoryName, 'scriptlogs')
 ];
 
-parser.getParser().then(parser => {
+var parsedLogsOutput = path.join(__dirname, "output");
 
-    return promise.all(logFilesDirectoryFullPaths.map(logFilesDirectoryFullPath => readdir(logFilesDirectoryFullPath).then(files => {
+main.getParser()
+    .then(function(parser) {
+        return Promise.all(logFilesDirectoryFullPaths.map(function(filePath) {
+                console.log(filePath);
+                return readdir(filePath)
+                    .then(function(files) {
+                        console.log(files);
+                        return files.map(function(file) {
+                                if (fs.lstatSync(path.join(filePath, file)).isFile()) {
 
-        return files.map(file => {
+                                    return {
+                                        fileName: file,
+                                        fullName: path.join(filePath, file)
+                                    };
 
-                if (fs.lstatSync(path.join(logFilesDirectoryFullPath, file)).isFile()) {
+                                }
 
-                    return {
-                        fileName: file,
-                        fullName: path.join(logFilesDirectoryFullPath, file)
-                    };
+                                return false;
+                            })
+                            .filter(function(i) { return i && logFilesFilter.indexOf(i.fileName) == -1; })
+                            .filter(function(i) { return i && (logFilesForce.length == 0 || logFilesForce.indexOf(i.fileName) !== -1); });
+                    })
+            }))
+            .then(function(files) {
+                console.log(files);
+                return Promise.all([
 
-                }
+                    parser,
 
-                return false;
+                    [].concat.apply([], files)
 
+                ]);
             })
-            .filter(i => i && logFilesFilter.indexOf(i.fileName) == -1)
-            .filter(i => i && (logFilesForce.length == 0 || logFilesForce.indexOf(i.fileName) !== -1));
-
-    }))).then(files => {
-
-        return promise.all([
-
-            parser,
-
-            [].concat.apply([], files)
-
-        ]);
-
     })
+    .then(function(reply) {
+        var parser = reply[0];
+        var files = reply[1];
 
-}).then(reply => {
-
-    var parser = reply[0];
-    var files = reply[1];
-
-    var step = promise([]);
-    files.forEach(file => {
-
-        step = step.then(function(arr) {
-
-            return promise().then(() => {
-
-                return readFile(file.fullName, 'utf-8').then(fileContent => {
+        return Promise.all(files.map(function(file) {
+            return readFile(file.fullName, 'utf-8')
+                .then(function(fileContent) {
 
                     return {
                         fullName: file.fullName,
@@ -84,63 +75,43 @@ parser.getParser().then(parser => {
                         fileContent: fileContent
                     }
 
+                })
+                .then(function(file) {
+                    var parsedFile = parseQlikLogFile(parser, file)
+                    if (!parsedFile.parsed || (
+                            parsedFile.result.filter(function(blk) { return blk.blockType == 'FAILED'; }).length == 0 &&
+                            parsedFile.result.filter(function(blk) { return blk.blockType == 'UNKNOWN'; }).length > 0
+                        )) {
+
+                        var strParsed = util.inspect(parsedFile, { showHidden: false, depth: null, colors: false, maxArrayLength: null });
+
+                        console.log('err', file.fileName);
+
+                        fs.writeFileSync(path.join(parsedLogsOutput, 'err-' + file.fileName), strParsed);
+
+                        return { type: 'err', file: file };
+
+                    } else {
+
+                        console.log('done', file.fileName);
+
+                        fs.writeFileSync(path.join(parsedLogsOutput, 'done-' + file.fileName), JSON.stringify(parsedFile));
+
+                        // return Promise.resolve(arr.concat([{ type: 'done', file: file }]));
+                        return { type: "done", file: file };
+
+                    }
                 });
-
-            }).then(file => {
-
-                perfy.start('process');
-
-                var parsing = 'parsing ' + file.fileName + ' ...';
-                process.stdout.write(parsing);
-
-                var parsedFile = parseQlikLogFile(parser, file)
-
-                process.stdout.write('\r' + ' '.repeat(parsing.length + 1) + '\r');
-
-                if (!parsedFile.parsed || (
-                        parsedFile.result.filter(blk => blk.blockType == 'FAILED').length == 0 &&
-                        parsedFile.result.filter(blk => blk.blockType == 'UNKNOWN').length > 0
-                    )) {
-
-                    var strParsed = util.inspect(parsedFile, { showHidden: false, depth: null, colors: false, maxArrayLength: null });
-
-                    console.log('err', file.fileName, perfy.end('process').time);
-
-                    fs.writeFileSync(path.join(__dirname, 'log files out', 'err-' + file.fileName), strParsed);
-
-                    return promise.resolve(arr.concat([{ type: 'err', file: file }]));
-
-                } else {
-
-                    console.log('done', file.fileName, perfy.end('process').time);
-
-                    fs.writeFileSync(path.join(__dirname, 'test', 'log files out', 'done-' + file.fileName), JSON.stringify(parsedFile));
-
-                    // return promise.resolve(arr.concat([{ type: 'done', file: file }]));
-                    return promise.resolve(arr);
-
-                }
-
-
-
-            })
-
-        });
-
+        }));
+    })
+    .then(function(resultArray) {
+        console.log(resultArray);
+        return resultArray;
+    })
+    .catch(function(error) {
+        console.log(error);
     });
 
-    return step;
-
-}).then(function(arr) {
-
-    console.log('\n' + arr.filter(file => file.type == 'err').map(file => "'" + file.file.fileName + "',").join('\n'))
-
-
-}).fail(function(err) {
-
-    console.log('fail', util.inspect(err, { showHidden: true, depth: null, colors: true, maxArrayLength: null }));
-
-});
 
 function parseQlikLogFile(parser, file) {
 
